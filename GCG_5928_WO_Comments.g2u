@@ -1,0 +1,199 @@
+﻿Program.Sub.Preflight.Start
+Program.Sub.Preflight.End
+
+Program.Sub.Main.Start
+Function.Intrinsic.UI.UsePixels ' Allows you to use Pixels instead of Twips throughout
+'Auto WO Generation Exit Pre hook 28601 and Post process hook 17261
+
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+F.ODBC.Connection!con.OpenCompanyConnection
+
+f.Intrinsic.Control.If(v.Caller.Hook,=,"28601")
+	f.Intrinsic.Control.CallSub(LoadWOBDFtoDT)
+	f.Intrinsic.Control.CallSub(AddWOSubs)
+	f.Intrinsic.Control.CallSub(AddColumns)
+f.Intrinsic.Control.elseIf(v.Caller.Hook,=,"17261")
+	f.Intrinsic.Control.CallSub(LoadWOtoDT)
+	f.Intrinsic.Control.CallSub(AddColumns)	
+f.Intrinsic.Control.EndIf
+f.Intrinsic.Control.CallSub(Unload)
+
+F.Intrinsic.Control.Catch
+		F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+		F.Intrinsic.UI.Msgbox(V.Local.sError)
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.EndTry
+Program.Sub.Main.End
+
+Program.Sub.LoadWOBDFtoDT.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+
+'load BDF from scheduled WOs to datatable
+V.Local.sFilePath.Declare
+v.Local.sFieldNames.Declare
+v.Local.sTypes.Declare
+v.Local.sRet.Declare
+
+V.Local.sFilePath.Set(Variable.Passed.009000)
+
+ F.Intrinsic.File.File2String(V.Local.sFilePath,V.Local.sRet)
+        f.Intrinsic.Control.If(V.Local.sRet.Trim,<>,"")
+        'WO not generated
+            V.Local.sFieldNames.Set("Part*!*Loc*!*WO*!*Suffix")
+            V.Local.sTypes.Set("String*!*String*!*string*!*String")
+            F.Data.DataTable.CreateFromString("DTAutoWO",V.Local.sRet,V.Local.sFieldNames,V.Local.sTypes,v.Ambient.Tab,v.ambient.newline,True)
+        f.Intrinsic.Control.EndIf
+
+F.Intrinsic.Control.Catch
+		F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+		F.Intrinsic.UI.Msgbox(V.Local.sError)
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.EndTry
+Program.Sub.LoadWOBDFtoDT.End
+
+Program.Sub.AddColumns.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+
+F.Data.DataTable.AddColumn("dtAutoWO","Parent_WO","STRING")
+F.Data.DataTable.AddColumn("dtAutoWO","Parent_Suffix","STRING")
+F.Data.DataTable.AddColumn("dtAutoWO","ParentWCs","STRING")
+F.Data.DataTable.AddColumn("dtAutoWO","LastCommentSeq","STRING")
+F.Data.Datatable.AddExpressionColumn("dtAutoWO","JOBSUFFIX",STRING,"WO+SUFFIX")
+
+'Lookup Parent WO
+F.Data.DataTable.SetValue("dtAutoWO",-1,"Parent_WO","")
+F.Data.Dictionary.CreateFromSQL("dWO","con","Select (JOB+SUFFIX) AS JOBSUFFIX,PARENT_WO, PARENT_SUFFIX_PARENT From V_JOB_HEADER WHERE DATE_CLOSED = '1900-1-1'")	
+F.Data.Dictionary.SetDefaultReturn("dWO","")
+F.Data.DataTable.FillFromDictionary("dtAutoWO","dWO","JOBSUFFIX","PARENT_WO")
+F.Data.Dictionary.Close("dWO")
+
+'Lookup Parent WO suffix
+F.Data.DataTable.SetValue("dtAutoWO",-1,"Parent_Suffix","")
+F.Data.Dictionary.CreateFromSQL("dWO","con","Select (JOB+SUFFIX) AS JOBSUFFIX,PARENT_SUFFIX_PARENT From V_JOB_HEADER WHERE DATE_CLOSED = '1900-1-1'")	
+F.Data.Dictionary.SetDefaultReturn("dWO","")
+F.Data.DataTable.FillFromDictionary("dtAutoWO","dWO","JOBSUFFIX","PARENT_SUFFIX")
+F.Data.Dictionary.Close("dWO")
+
+'Get parent WO labor sequence WCs
+V.Local.sSQL.Declare
+V.Local.iCnt.Declare
+V.Local.sWC.Declare
+V.Local.sComSeq.Declare
+
+F.Intrinsic.Control.For(V.Local.iCnt,0,V.DataTable.DTAutoWO.RowCount--,1)	
+	F.Intrinsic.String.Build("SELECT WORKCENTER FROM V_JOB_OPERATIONS_WC WHERE JOB = '{0}' AND SUFFIX = '{1}' AND LMO = 'L' AND FLAG_SET_UP <> 'Y' AND TASK_MSG_NEEDED <> 'Y' AND SEQ <'960000'",V.DataTable.DTAutoWO(V.Local.iCnt).PARENT_WO!FieldValtrim,V.DataTable.DTAutoWO(V.Local.iCnt).PARENT_SUFFIX!FieldValtrim,v.Local.sSQL)
+		F.ODBC.Connection!con.ExecuteAndReturn(V.Local.sSQL,v.Local.sWC)
+		F.Intrinsic.String.Replace(v.Local.sWC,"'","",v.Local.sWC)
+		F.Intrinsic.String.Replace(v.Local.sWC,"#$#",">",v.Local.sWC)	
+		F.Data.Datatable.SetValue("dtAutoWO",V.Local.iCnt,"ParentWCs",V.Local.sWC)
+F.Intrinsic.Control.Next(V.Local.iCnt)
+
+'Get last WO comment seq number on child WOs
+F.Intrinsic.Control.For(V.Local.iCnt,0,V.DataTable.DTAutoWO.RowCount--,1)	
+	F.Intrinsic.String.Build("SELECT TOP 1 SEQ FROM V_JOB_OPERATIONS_WC WHERE JOB = '{0}' AND SUFFIX = '{1}' AND LMO = 'C' AND SEQ <'000100' ORDER BY SEQ DESC",V.DataTable.DTAutoWO(V.Local.iCnt).WO!FieldValtrim,V.DataTable.DTAutoWO(V.Local.iCnt).SUFFIX!FieldValtrim,v.Local.sSQL)
+		F.ODBC.Connection!con.ExecuteAndReturn(V.Local.sSQL,v.Local.sComSeq)
+		F.Intrinsic.String.Replace(v.Local.sComSeq,"'","",v.Local.sComSeq)
+		F.Intrinsic.String.Replace(v.Local.sComSeq,"#$#","",v.Local.sComSeq)	
+		F.Data.Datatable.SetValue("dtAutoWO",V.Local.iCnt,"LastCommentSeq",V.Local.sComSeq)
+F.Intrinsic.Control.Next(V.Local.iCnt)
+
+'Insert Comment Seq into Child WOs maded to Job
+
+'filter out scheduled WOs (top parents)
+f.Data.DataView.Create("dtAutoWO","dvChildWOs",22,"Parent_WO <> ''","")
+f.Data.DataView.ToDataTable("dtAutoWO","dvChildWOs","dtWOstoAddComments",True)
+f.Data.DataView.Close("dtAutoWO","dvChildWOs")
+v.Local.iCnt.Set("")
+v.Local.sComSeqplus1.Declare
+v.Local.sComSeqplus2.Declare
+V.Local.sWCs30char.Declare
+F.Intrinsic.Control.For(V.Local.iCnt,0,V.DataTable.dtWOstoAddComments.RowCount--,1)
+	f.Intrinsic.Math.Add(V.DataTable.dtWOstoAddComments(V.Local.iCnt).LastCommentSeq!FieldValtrim,1,v.Local.sComSeqplus1)
+	f.Intrinsic.String.LPad(v.Local.sComSeqplus1,"0",6,v.Local.sComSeqplus1)
+	f.Intrinsic.Math.Add(V.DataTable.dtWOstoAddComments(V.Local.iCnt).LastCommentSeq!FieldValtrim,2,v.Local.sComSeqplus2)
+	f.Intrinsic.String.LPad(v.Local.sComSeqplus2,"0",6,v.Local.sComSeqplus2)
+	f.Intrinsic.String.Left(V.DataTable.dtWOstoAddComments(V.Local.iCnt).ParentWCs!FieldValtrim,30,v.Local.sWCs30char)
+
+	f.Intrinsic.String.Build("INSERT INTO JOB_OPERATIONS (JOB,SUFFIX,SEQ,WO_INSERT,LMO,DESCRIPTION,ROUTER_SEQ,UNITS_OPEN,UNITS_COMPLETE,MAIN_COMMENT) VALUES('{0}','{1}','{2}','00','C','{3}','000000','0.0000','0.0000','Y')",V.DataTable.dtWOstoAddComments(V.Local.iCnt).WO!FieldValtrim,V.DataTable.dtWOstoAddComments(V.Local.iCnt).Suffix!FieldValtrim,v.Local.sComSeqplus1,v.Local.sWCs30char,v.Local.sSQL)
+	F.ODBC.Connection!con.Execute(V.Local.sSQL)
+	f.Intrinsic.String.Build("INSERT INTO JOB_OPERATIONS (JOB,SUFFIX,SEQ,WO_INSERT,LMO,DESCRIPTION,ROUTER_SEQ,UNITS_OPEN,UNITS_COMPLETE,MAIN_COMMENT) VALUES('{0}','{1}','{2}','00','C','','000000','0.0000','0.0000','Y')",V.DataTable.dtWOstoAddComments(V.Local.iCnt).WO!FieldValtrim,V.DataTable.dtWOstoAddComments(V.Local.iCnt).Suffix!FieldValtrim,v.Local.sComSeqplus2,v.Local.sSQL)
+	F.ODBC.Connection!con.Execute(V.Local.sSQL)
+F.Intrinsic.Control.Next(V.Local.iCnt)
+
+F.Intrinsic.Control.Catch
+		F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+		F.Intrinsic.UI.Msgbox(V.Local.sError)
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.EndTry
+Program.Sub.AddColumns.End
+
+Program.Sub.Unload.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+
+F.ODBC.Connection!con.Close
+f.Data.Datatable.close("dtAutoWO")
+f.Data.Datatable.close("dtWOstoAddComments")
+
+F.Intrinsic.Control.Catch
+		F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+		F.Intrinsic.UI.Msgbox(V.Local.sError)
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.EndTry
+Program.Sub.Unload.End
+
+Program.Sub.AddWOSubs.Start
+'add rows to Datatable for child WOs created in AWOG
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+
+V.Local.sSQL.Declare
+V.Local.iCnt.Declare
+
+F.Intrinsic.Control.For(V.Local.iCnt,0,(V.DataTable.dtAutoWO.RowCount)-1,1)	
+	F.Intrinsic.String.Build("SELECT JOB,SUFFIX,PARENT_WO,PARENT_SUFFIX_PARENT,PART,LOCATION FROM V_JOB_HEADER WHERE JOB = '{0}' AND SUFFIX <> '{1}'",V.DataTable.dtAutoWO(V.Local.iCnt).WO!FieldValtrim,V.DataTable.dtAutoWO(V.Local.iCnt).SUFFIX!FieldValtrim,v.Local.sSQL)
+		F.ODBC.Connection!con.OpenRecordsetRO("rstSel",v.Local.sSQL)
+		Function.Intrinsic.Control.DoUntil(V.odbc.Con!rstSel.eof,=,True)
+			F.Data.DataTable.AddRow("dtAutoWO","PART",V.ODBC.con!rstSel.FieldValTrim!PART,"LOC",V.ODBC.con!rstSel.FieldValTrim!LOCATION,"WO",V.ODBC.con!rstSel.FieldValTrim!Job,"SUFFIX",V.ODBC.con!rstSel.FieldValTrim!SUFFIX)			
+		F.ODBC.con!rstSel.MoveNext
+		Function.Intrinsic.Control.Loop		
+		F.ODBC.Con!rstSel.Close
+F.Intrinsic.Control.Next(V.Local.iCnt)
+
+F.Intrinsic.Control.Catch
+		F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+		F.Intrinsic.UI.Msgbox(V.Local.sError)
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.EndTry
+Program.Sub.AddWOSubs.End
+
+Program.Sub.LoadWOtoDT.Start
+F.Intrinsic.Control.Try
+V.Local.sError.Declare
+
+'load WO from create BOM WO process (hook is fired for each WO in the BOM created)
+v.Local.sWO.Declare
+v.Local.sWOSuf.Declare
+
+V.Local.sWO.Set(Variable.Passed.009000.Trim)
+V.Local.sWOSuf.Set(Variable.Passed.009001.Trim)
+
+f.Data.Datatable.Create("dtAutoWO",True)
+F.Data.DataTable.AddColumn("dtAutoWO","WO","STRING")
+F.Data.DataTable.AddColumn("dtAutoWO","SUFFIX","STRING")
+F.Data.DataTable.AddRow("dtAutoWO","WO",v.Local.sWO,"SUFFIX",v.Local.sWOSuf)	
+
+F.Intrinsic.Control.Catch
+		F.Intrinsic.String.Build("Project: {0}{1}{1}Subroutine: {2}{1}Error Occurred {3} with description {4}{1}{1}GAB Version: {5}",V.Ambient.ScriptPath,V.Ambient.Newline,V.Ambient.CurrentSubroutine,V.Ambient.ErrorNumber,V.Ambient.ErrorDescription,V.Ambient.GABVersion,V.Local.sError)
+		F.Intrinsic.UI.Msgbox(V.Local.sError)
+		F.Intrinsic.Control.End
+	F.Intrinsic.Control.EndTry
+Program.Sub.LoadWOtoDT.End
+
+Program.Sub.Comments.Start
+${$5$}$3.0.0.0$}$1
+${$6$}$bstevens$}$20200325155112362$}$3Pg7+K2MGztoXyjxMVZqWaM5g3GOUsSN7lkaytOfewuye1Dp4ATnU7anUxK6s3vcOV04jqf+h1U7ajwz0nMP8A==
+Program.Sub.Comments.End
